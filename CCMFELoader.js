@@ -1,3 +1,8 @@
+/**
+ * ref to: https://webpack.js.org/concepts/module-federation/
+ * @param {*} props 
+ * @returns 
+ */
 // this component is webpack5 remote component loader
 const System = (props) => {
     const {
@@ -136,7 +141,6 @@ const getBasePathAssetManifest = async (props) => {
   })
 }
 
-
 /**
  * @param {string} remote - the remote global name
  * @param {object | string} shareScope - the shareScope Object OR scope key
@@ -160,6 +164,8 @@ const getOrLoadRemote = (props) => {
         // check if it was initialized
         if (!window[remote].__initialized) {
           // if share scope doesnt exist (like webpack 4) then expect shareScope to be a manual object
+          // __webpack_share_scopes__ will be injected in global scope during runtime for loading remote.
+          // __webpack_share_scopes__ === __webpack_require__.S
           if (typeof __webpack_share_scopes__ === "undefined") {
             // use default share scope object passed in manually
             await window[remote].init(shareScope.default);
@@ -201,5 +207,75 @@ const getOrLoadRemote = (props) => {
       resolve();
     }
   })
-
 }
+
+// after remoteEntry.js loaded
+// 1. remote will hook in window
+window["assettransfer"] = {
+  get: function(moduleName) {
+    const moduleMapper = {
+      "./App": () => Promise.all([
+        import("scr_Providers_tsx"),
+        import("src_utils_token_index.ts"),
+        import("src_Routes_tsx"),
+        //.... 动态加载 入口位置的资源模块
+      ])
+    }
+    return moduleMapper[moduleName];
+  },
+  init: function (shareScope) {
+    // 加载一些共享模块
+    // 其实是从__webpack_require__.S中获取获取share模块，并动态加载
+    /**
+     *  __webpack_require__.S = {
+            [scopeName: 默认为default]: {
+                "react-dom" : {
+                    17.0.2 : {
+                        get: factory(加载函数)
+                    }
+                },
+                "react" : {
+                    17.0.2 : {
+                        get: factory(加载函数)
+                    }
+              }
+        }
+      * 
+      */
+    if (!__webpack_require__.S) return;
+    const name = "default";
+    const oldScope = __webpack_require__.S[name];
+    if (oldScope && oldScope !== shareScope) throw new Error("shareScope has already changed");
+    __webpack_require__.S[name] = shareScope;
+    return Promise.all([import(shareModules["react-dom"]["17.0.2"].get()), import(shareModules["react"]["17.0.2"].get())]);
+  },
+  __initialized: true,
+}
+
+
+// 0. 在ui-productservice中，并没有使用remotes的方式，将ui-asset-transfer作为远程动态资源加载到项目中，而是
+// 封装了上述的CCMFELoader组件，通过动态加载远程资源的方式，实现了ui-asset-transfer的动态加载
+
+// 1. 在ui-asset-transfer中，入口的index.tsx中使用了import("bootstript.tsx")这种写法，但是在生产中，bootstript.tsx
+// 文件并不会作为远程资料直接加载，import("bootstript.tsx")只有应用作为host的时候才会生效
+// host 的构建产物如下: 
+const a = {
+  "./src/index.js": (
+  __unused_webpack_module,
+  __unused_webpack_exports,
+  __webpack_require__
+  ) => {
+    Promise.all([
+      __webpack_require__.e("vendors-node_modules_react-dom_index_js"),
+      __webpack_require__.e("src_bootstrap_js"),
+    ]).then(
+      __webpack_require__.bind(__webpack_require__, "./src/bootstrap.js")
+    );
+  }
+}
+
+// 2. host应用要动态import("bootstript.tsx")，是因为要先加载远程资源remoteEntry.js
+// 获取到remote信息，随后通过__webpack_require.e初始化remote资源，之后再加载本地代码，
+// 从而可以在本地加载remote模块
+
+// 3. remoteEntry.js 加载后, 需要调用module.init来加载共享模块，随后在加载本地代码
